@@ -1,0 +1,12 @@
+[package]
+name = "kunio-examples"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+kunio = {path = "../kunio"}
+
+[[example]]
+name = "echo"
+path = "echo.rs"

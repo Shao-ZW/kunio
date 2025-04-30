@@ -1,0 +1,9 @@
+[workspace]
+
+resolver = "3"
+
+members = [
+    "kunio",
+    # Internal
+    "examples",
+]

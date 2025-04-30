@@ -1,0 +1,7 @@
+[package]
+name = "kunio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+scoped-tls = "1"
