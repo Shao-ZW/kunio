@@ -10,7 +10,8 @@ pub mod waker;
 
 pub use waker::*;
 
-use crate::runtime;
+use crate::runtime::{RUNTIME, RUNTIME_EXT};
+use crate::utils::info;
 
 pub struct Task {
     raw: RawTask,
@@ -75,8 +76,8 @@ pub struct RawTask {
 }
 
 impl RawTask {
-    pub fn new<F: Future>(future: F) -> Self {
-        let ptr = Box::into_raw(TaskEntity::new(future));
+    pub fn new<F: Future>(future: F, owner_id: u32) -> Self {
+        let ptr = Box::into_raw(TaskEntity::new(future, owner_id));
         // Safety:
         let ptr = unsafe { NonNull::new_unchecked(ptr as *mut Header) };
         Self { ptr }
@@ -109,36 +110,28 @@ impl RawTask {
 pub struct Header {
     refcount: Cell<usize>,
     vtable: &'static Vtable,
+    owner_id: u32,
 }
 
 impl Header {
-    pub fn new<F: Future>() -> Self {
+    pub fn new<F: Future>(owner_id: u32) -> Self {
         Self {
             refcount: Cell::new(0),
             vtable: vtable::<F>(),
+            owner_id,
         }
     }
 
     fn ref_dec(&self) -> usize {
         let cnt = self.refcount.get();
-        println!(
-            "KUNIO DEBUG[State]: ref_dec {} -> {}, ptr: {:p}",
-            cnt,
-            cnt - 1,
-            self
-        );
+        info!("Header::ref_dec : {} -> {}, ptr: {:p}", cnt, cnt - 1, self);
         self.refcount.set(cnt - 1);
         cnt - 1
     }
 
     fn ref_inc(&self) -> usize {
         let cnt = self.refcount.get();
-        println!(
-            "KUNIO DEBUG[State]: ref_inc {} -> {}, ptr: {:p}",
-            cnt,
-            cnt + 1,
-            self
-        );
+        info!("Header::ref_inc : {} -> {}, ptr: {:p}", cnt, cnt + 1, self);
         self.refcount.set(cnt + 1);
         cnt + 1
     }
@@ -196,6 +189,7 @@ impl<F: Future> Core<F> {
     pub fn poll(&self, cx: &mut Context<'_>) -> Poll<()> {
         let res = match unsafe { &mut *self.stage.get() } {
             Stage::Runnable(future) => {
+                // Safety:
                 let future = unsafe { Pin::new_unchecked(future) };
                 future.poll(cx)
             }
@@ -216,7 +210,6 @@ impl<F: Future> Core<F> {
 
     pub fn try_read_output(&self, res: &mut Poll<F::Output>) {
         if let Stage::Finished(_) = unsafe { &*self.stage.get() } {
-            println!("reach!");
             match mem::replace(unsafe { &mut *self.stage.get() }, Stage::Consumed) {
                 Stage::Finished(output) => *res = Poll::Ready(output),
                 _ => unreachable!(),
@@ -262,9 +255,9 @@ pub struct TaskEntity<F: Future> {
 }
 
 impl<F: Future> TaskEntity<F> {
-    fn new(future: F) -> Box<Self> {
+    fn new(future: F, owner_id: u32) -> Box<Self> {
         Box::new(TaskEntity {
-            header: Header::new::<F>(),
+            header: Header::new::<F>(owner_id),
             core: Core::new(future),
             trailer: Trailer {
                 join_waker: UnsafeCell::new(None),
@@ -301,15 +294,17 @@ impl<F: Future> TaskHandle<F> {
     }
 
     fn poll(self) {
-        println!("real poll");
         let waker = unsafe { Waker::from_raw(raw_waker::<F>(self.header())) };
         let mut cx = Context::from_waker(&waker);
         if let Poll::Ready(_) = self.core().poll(&mut cx) {
+            RUNTIME_EXT
+                .get(self.header().owner_id)
+                .unwrap()
+                .fetch_sub_count(1);
             if self.has_join_waker() {
                 self.trailer().join_wake();
             }
         }
-        println!("real poll end");
     }
 
     fn try_read_output(self, res: &mut Poll<F::Output>, waker: &Waker) {
@@ -331,26 +326,82 @@ impl<F: Future> TaskHandle<F> {
     }
 
     fn get_new_task(&self) -> Task {
-        println!("get new task!");
         Task::new(RawTask {
             ptr: self.task.cast(),
         })
     }
 
     fn wake_by_ref(&self) {
-        runtime::RUNTIME.with(|runtime| {
-            runtime.scheduler.schedule(self.get_new_task());
-        });
+        if RUNTIME.is_set() {
+            RUNTIME.with(|runtime| {
+                runtime.scheduler.schedule(self.get_new_task());
+            });
+        } else {
+            RUNTIME_EXT
+                .get(self.header().owner_id)
+                .unwrap()
+                .push_woken_tasks(self.get_new_task());
+        }
     }
 
     fn wake_by_val(self) {
-        runtime::RUNTIME.with(|runtime| {
-            runtime.scheduler.schedule(self.get_new_task());
-        });
+        if RUNTIME.is_set() {
+            RUNTIME.with(|runtime| {
+                runtime.scheduler.schedule(self.get_new_task());
+            });
+        } else {
+            RUNTIME_EXT
+                .get(self.header().owner_id)
+                .unwrap()
+                .push_woken_tasks(self.get_new_task());
+        }
     }
 }
 
-pub fn new_task<F: Future>(future: F) -> (Task, JoinHandle<F::Output>) {
-    let raw = RawTask::new(future);
+pub fn new_task<F: Future>(future: F, owner_id: u32) -> (Task, JoinHandle<F::Output>) {
+    let raw = RawTask::new(future, owner_id);
     (Task::new(raw), JoinHandle::new(raw))
+}
+
+pub struct BlockingTask {
+    raw: RawTask,
+}
+
+// Safety:
+unsafe impl Send for BlockingTask {}
+
+impl BlockingTask {
+    pub fn new(raw: RawTask) -> Self {
+        raw.header().ref_inc();
+        Self { raw }
+    }
+
+    pub fn run(self) {
+        self.raw.poll();
+    }
+}
+
+pub fn new_blocking_task<F: Future>(
+    future: F,
+    owner_id: u32,
+) -> (BlockingTask, JoinHandle<F::Output>) {
+    let raw = RawTask::new(future, owner_id);
+    (BlockingTask::new(raw), JoinHandle::new(raw))
+}
+
+pub struct BlockingFuture<F>(pub Option<F>);
+
+impl<F, R> Future for BlockingFuture<F>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    type Output = R;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // Safety:
+        let future = unsafe { self.get_unchecked_mut() };
+        let func = future.0.take().unwrap();
+        Poll::Ready(func())
+    }
 }

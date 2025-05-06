@@ -5,8 +5,16 @@ edition = "2024"
 publish = false
 
 [dev-dependencies]
-kunio = {path = "../kunio"}
+kunio = {path = "../kunio", features = ["debug"]}
 
 [[example]]
-name = "echo"
-path = "echo.rs"
+name = "kun"
+path = "kun.rs"
+
+[[example]]
+name = "file"
+path = "file.rs"
+
+[[example]]
+name = "blocking"
+path = "blocking.rs"

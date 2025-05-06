@@ -4,4 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-scoped-tls = "1"
+scoped-tls = "1.0"
+io-uring = "0.7"
+libc = "0.2"
+threadpool = "1.8"
+lazy_static = "1.4"
+crossbeam = "0.8"
+colored = "3.0"
+
+[features]
+debug = []
