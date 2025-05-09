@@ -4,9 +4,14 @@ use std::task::{Context, Poll, Waker};
 
 use crate::runtime::RUNTIME;
 
+mod accept;
 mod close;
+mod connect;
 mod open;
 mod read;
+mod recv;
+mod send;
+mod socket;
 mod write;
 
 pub struct Op<T> {

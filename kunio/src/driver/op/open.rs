@@ -10,7 +10,7 @@ use io_uring::{opcode, types};
 
 pub struct Open {
     path: CString,
-    flags: libc::c_int,
+    flags: i32,
     mode: libc::mode_t,
 }
 

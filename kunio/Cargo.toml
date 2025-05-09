@@ -10,7 +10,6 @@ libc = "0.2"
 threadpool = "1.8"
 lazy_static = "1.4"
 crossbeam = "0.8"
-colored = "3.0"
 
 [features]
 debug = []
